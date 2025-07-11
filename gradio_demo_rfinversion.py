@@ -97,8 +97,8 @@ def create_demo(model_name: str, device: str = "cuda" if torch.cuda.is_available
                 with gr.Accordion("Advanced Options", open=True):
                     starting_index = gr.Slider(0, 100, 0, step=1, label="starting index")
                     stop_index = gr.Slider(0, 100, 7, step=1, label="stop index")
-                    gamma = gr.Slider(0.0, 10.0, 1.0, step=0.05, label="gamma Guidance")
-                    eta = gr.Slider(0.0, 10.0, 1.0, step=0.05, label="eta Guidance")
+                    gamma = gr.Slider(0.0, 10.0, 0.5, step=0.05, label="gamma Guidance")
+                    eta = gr.Slider(0.0, 10.0, 0.9, step=0.05, label="eta Guidance")
                     seed = gr.Textbox(None, label="Seed")
                     target_prompt_2 = gr.Textbox(label="Target Prompt 2 for t5 encoder", value=None)
             
