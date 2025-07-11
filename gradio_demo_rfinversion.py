@@ -106,10 +106,10 @@ def create_demo(model_name: str, device: str = "cuda" if torch.cuda.is_available
                 init_image = gr.Image(label="Input Image", visible=True, type='pil')
             
             with gr.Column():
-                output_image = gr.Image(label="Generated Image")
+                output_image = gr.Image(label="Generated Image", format='jpg')
             
             with gr.Column():
-                diff_image   = gr.Image(label="Difference (|input - output|)", type="pil")
+                diff_image   = gr.Image(label="Difference (|input - output|)", format='jpg')
 
         generate_btn.click(
             fn=editor.edit,
