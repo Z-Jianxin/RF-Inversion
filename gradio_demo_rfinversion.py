@@ -84,7 +84,7 @@ def create_demo(model_name: str, device: str = "cuda" if torch.cuda.is_available
     editor = FluxEditor()
 
     with gr.Blocks() as demo:
-        gr.Markdown(f"SDE coupling Demo with Flux")
+        gr.Markdown(f"RF-Inversion Demo")
         
         with gr.Row():
             with gr.Column():
