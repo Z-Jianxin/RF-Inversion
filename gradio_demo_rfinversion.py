@@ -6,12 +6,26 @@ import numpy as np
 
 from pipeline_rf_inversion_sde import RFInversionFluxPipelineSDE
 
+from transformers import CLIPProcessor, CLIPModel
+
 class FluxEditor:
     def __init__(self):
         self.pipe = RFInversionFluxPipelineSDE.from_pretrained(
             "black-forest-labs/FLUX.1-dev",
             torch_dtype=torch.bfloat16,
         )
+        self.clip_model = CLIPModel.from_pretrained("openai/clip-vit-base-patch32") # it's lightweighted so it can live on CPU
+        self.clip_processor = CLIPProcessor.from_pretrained("openai/clip-vit-base-patch32")
+
+    def print_clip_score(self, image, prompt):
+        clip_inputs = self.clip_processor(
+            text=[prompt,],
+            images=image,
+            return_tensors="pt",
+            padding=True,
+        )
+        clip_outputs = self.clip_model(**clip_inputs)
+        print("CLIP score: ", clip_outputs.logits_per_image.detach().item())
     
     def edit(
         self,
@@ -65,6 +79,11 @@ class FluxEditor:
         self.pipe = self.pipe.to("cpu")
         torch.cuda.empty_cache()
         print("End Edit")
+
+        print("target prompt vs target image: ")
+        self.print_clip_score(edited_image, target_prompt)
+        print("target prompt vs source image: ")
+        self.print_clip_score(init_resized, target_prompt)
         
         arr1 = np.array(init_resized, dtype=np.float32)
         arr2 = np.array(edited_image, dtype=np.float32)
