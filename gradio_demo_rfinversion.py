@@ -122,13 +122,12 @@ class FluxEditor:
         
         with torch.no_grad():
             dist = self.lpips(self.lpips_transform(init_resized).to("cuda"), self.lpips_transform(edited_image).to("cuda"))
-
-    
+        print("LPIPS distance: ", dist.item())
+        
         with torch.no_grad():
             dist = self.dino_dist(init_resized, edited_image)
         print("DINO distance: ", 1.0-dist)
 
-        print("LPIPS distance: ", dist.item())
         torch.cuda.empty_cache()
         print("End Edit\n\n")
         return edited_image, diff_img
