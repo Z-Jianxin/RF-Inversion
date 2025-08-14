@@ -1,15 +1,3 @@
-#!/usr/bin/env python3
-"""
-Batch runner for RF‑Inversion (RF‑Inversion‑Edit).
-
-Reads a JSON dataset (image_path / source_prompt / target_prompt), applies the
-RF‑Inversion pipeline to each entry, saves the edited & diff images, computes
-metrics, and writes everything to a CSV file.
-
-The core editing code is a verbatim copy of the official Gradio demo, so a
-given seed produces exactly the same bytes.
-"""
-
 import argparse
 import csv
 import json
@@ -19,25 +7,39 @@ from typing import Dict, List, Tuple
 
 import numpy as np
 import torch
+import torch.nn.functional as F
 import torchvision.transforms as T
 from PIL import Image, ImageChops
 from transformers import CLIPModel, CLIPProcessor
 
 from pipeline_rf_inversion_sde import RFInversionFluxPipelineSDE
 import lpips
+import timm  # NEW: DINO features
 
 # ------------------------------------------------------------
-# 1.  Metric helpers (channel‑averaged pixel distances)
+# 1.  Metric helpers (CLIP-L/14@336, LPIPS, DINO-S/16)
 # ------------------------------------------------------------
 class MetricComputer:
     def __init__(self, device: torch.device):
         self.device = device
-        self.clip_model = CLIPModel.from_pretrained("openai/clip-vit-base-patch32").to(device)
-        self.clip_processor = CLIPProcessor.from_pretrained("openai/clip-vit-base-patch32")
+
+        # UPDATED: CLIP ViT-L/14@336
+        self.clip_model = CLIPModel.from_pretrained("openai/clip-vit-large-patch14-336").to(device)
+        self.clip_processor = CLIPProcessor.from_pretrained("openai/clip-vit-large-patch14-336")
+
+        # LPIPS on `device` (unchanged behavior)
         self.lpips_fn = lpips.LPIPS(net="vgg").to(device)
         self.lpips_transform = T.Compose(
             [T.Resize((1024, 1024)), T.ToTensor(), T.Normalize((0.5,), (0.5,))]
         )
+
+        # NEW: DINO-S/16 backbone on `device`
+        self.dino = timm.create_model("vit_small_patch16_224.dino", pretrained=True, num_classes=0).to(device).eval()
+        self.dino_transform = T.Compose([
+            T.Resize(256), T.CenterCrop(224), T.ToTensor(),
+            T.Normalize(mean=[0.485, 0.456, 0.406],
+                        std=[0.229, 0.224, 0.225]),
+        ])
 
     @torch.inference_mode()
     def clip_similarity(self, image: Image.Image, text: str) -> float:
@@ -50,6 +52,15 @@ class MetricComputer:
         t1 = self.lpips_transform(img1).unsqueeze(0).to(self.device)
         t2 = self.lpips_transform(img2).unsqueeze(0).to(self.device)
         return self.lpips_fn(t1, t2).item()
+
+    @torch.inference_mode()
+    def dino_distance(self, img1: Image.Image, img2: Image.Image) -> float:
+        x1 = self.dino_transform(img1).unsqueeze(0).to(self.device)
+        x2 = self.dino_transform(img2).unsqueeze(0).to(self.device)
+        f1 = F.normalize(self.dino(x1), dim=1)
+        f2 = F.normalize(self.dino(x2), dim=1)
+        cos_sim = F.cosine_similarity(f1, f2).item()
+        return 1.0 - float(cos_sim)
 
     @staticmethod
     def pixel_distances(img1: Image.Image, img2: Image.Image) -> Tuple[float, float, float, float]:
@@ -125,35 +136,10 @@ class FluxEditor:
             enable_sde=True,
             guidance_scale=target_guidance,
         ).images[0]
-        init_resized = init_image.resize(
-            edited_image.size, Image.Resampling.LANCZOS
-        )
+        init_resized = init_image.resize(edited_image.size, Image.Resampling.LANCZOS)
         diff = ImageChops.difference(init_resized.convert("RGB"), edited_image.convert("RGB"))
         self.pipe = self.pipe.to("cpu")
 
-        # demo prints (kept)
-        print("target prompt vs target image:")
-        self.print_clip_score(edited_image, target_prompt)
-        print("target prompt vs source image:")
-        self.print_clip_score(init_resized, target_prompt)
-
-        arr1 = np.array(init_resized, dtype=np.float32)
-        arr2 = np.array(edited_image, dtype=np.float32)
-        mae = np.mean(np.abs(arr1 - arr2))
-        mae_median = np.median(np.abs(arr1 - arr2))
-        mse = np.mean((arr1 - arr2) ** 2)
-        mse_median = np.median((arr1 - arr2) ** 2)
-        print("L1 Distance:", mae, "median:", mae_median)
-        print("L2 Distance:", mse, "median:", mse_median)
-
-        with torch.no_grad():
-            dist = self.lpips(
-                self.lpips_transform(init_resized).to(self.device),
-                self.lpips_transform(edited_image).to(self.device),
-            )
-        print("LPIPS distance:", dist.item())
-        torch.cuda.empty_cache()
-        print("End Edit\n\n")
         return edited_image, diff
 
 
@@ -204,12 +190,14 @@ def run_edit(
     clip_edit = metric.clip_similarity(edited, target_prompt)
     clip_src  = metric.clip_similarity(init_pil, target_prompt)
     lpips_val = metric.lpips_distance(init_pil, edited)
+    dino_val  = metric.dino_distance(init_pil.resize(edited.size, Image.Resampling.LANCZOS), edited)
     l1_mean, l1_med, l2_mean, l2_med = metric.pixel_distances(init_pil.resize(edited.size), edited)
 
     return {
         "clip_target_edit": clip_edit,
         "clip_target_src":  clip_src,
         "lpips":            lpips_val,
+        "dino":             dino_val,
         "l1_mean":          l1_mean,
         "l1_median":        l1_med,
         "l2_mean":          l2_mean,
@@ -231,7 +219,7 @@ def parse_args():
     # demo defaults
     p.add_argument("--gamma",            type=float, default=0.5)
     p.add_argument("--num_steps",        type=int,   default=28)
-    p.add_argument("--target_guidance",  type=float, default=1.0)
+    p.add_argument("--target_guidance",  type=float, default=3.5)
     p.add_argument("--starting_index",   type=int,   default=0)
     p.add_argument("--stop_index",       type=int,   default=7)
     p.add_argument("--eta",              type=float, default=0.9)
